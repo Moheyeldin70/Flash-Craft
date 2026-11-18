@@ -68,11 +68,24 @@ jobs:
             fi
           fi
 
+      - name: Check Firebase config
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ ! -f app/google-services.json ]; then
+            if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+              echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+              echo "Restored app/google-services.json from secret."
+            else
+              echo "::warning::app/google-services.json is missing from the repository. If you excluded it from Git, add GOOGLE_SERVICES_JSON_BASE64 in GitHub Secrets."
+            fi
+          fi
+
       - name: Run unit tests
-        run: gradle testDebugUnitTest --no-daemon
+        run: gradle testDebugUnitTest --console=plain
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --console=plain
 
       - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
@@ -90,7 +103,7 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
             export KEYSTORE_PATH="$GITHUB_WORKSPACE/my-upload-key.jks"
-            gradle assembleRelease --no-daemon
+            gradle assembleRelease --console=plain
             echo "RELEASE_BUILT=true" >> "$GITHUB_ENV"
           else
             echo "Release signing secrets not set; skipping release APK."
