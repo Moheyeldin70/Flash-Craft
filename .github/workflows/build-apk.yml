@@ -25,11 +25,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Configure pre-installed Android SDK & licenses
         run: |
@@ -72,13 +72,14 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
-          if [ ! -f app/google-services.json ]; then
-            if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
-              echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
-              echo "Restored app/google-services.json from secret."
-            else
-              echo "::warning::app/google-services.json is missing from the repository. If you excluded it from Git, add GOOGLE_SERVICES_JSON_BASE64 in GitHub Secrets."
-            fi
+          if [ -f app/google-services.json ]; then
+            echo "Found app/google-services.json"
+          elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+            echo "Restored app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret."
+          else
+            echo "::error::app/google-services.json is missing in this GitHub repository! Commit app/google-services.json OR add a base64-encoded GOOGLE_SERVICES_JSON_BASE64 secret in GitHub Settings -> Secrets and variables -> Actions."
+            exit 1
           fi
 
       - name: Run unit tests
