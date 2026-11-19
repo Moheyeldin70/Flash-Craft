@@ -70,16 +70,23 @@ jobs:
       - name: Prepare debug keystore
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          DEBUG_KEYSTORE_BASE64_VAR: ${{ vars.DEBUG_KEYSTORE_BASE64 }}
         run: |
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
               tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
               echo "Restored debug.keystore from debug.keystore.base64."
+            elif [ -f app/debug.keystore.base64 ]; then
+              tr -d '\r\n ' < app/debug.keystore.base64 | base64 -d > debug.keystore
+              echo "Restored debug.keystore from app/debug.keystore.base64."
             elif [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
               printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > debug.keystore
               echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
+            elif [ -n "$DEBUG_KEYSTORE_BASE64_VAR" ]; then
+              printf '%s' "$DEBUG_KEYSTORE_BASE64_VAR" | tr -d '\r\n ' | base64 -d > debug.keystore
+              echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 variable."
             else
-              echo "::warning::debug.keystore.base64 is missing; generating a temporary debug keystore."
+              echo "::warning::Neither debug.keystore.base64 nor DEBUG_KEYSTORE_BASE64 was found; generating a temporary debug keystore (its SHA-1 will not match Firebase)."
               keytool -genkeypair -v \
                 -keystore debug.keystore \
                 -storepass android \
