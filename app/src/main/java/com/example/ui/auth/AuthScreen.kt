@@ -2,6 +2,7 @@ package com.example.ui.auth
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material3.Button
@@ -54,6 +56,7 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
@@ -62,13 +65,35 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Co
 import com.google.firebase.Firebase
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "Auth"
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun formatCredentialError(e: Exception): String {
+    val raw = e.localizedMessage ?: e.message ?: e::class.java.simpleName
+    val lower = raw.lowercase()
+    return when {
+        "28444" in lower || "developer console" in lower || "developer_error" in lower || "10:" in lower ->
+            "Google Sign-In config mismatch ($raw). Ensure the APK is signed with the debug.keystore matching app/google-services.json."
+        "16" in lower && "cannot find" in lower ->
+            "Google Sign-In could not issue a credential ($raw). Check Google Play Services & SHA-1 configuration."
+        e is GetCredentialException ->
+            "${e.type.substringAfterLast('.')}: $raw"
+        else -> raw
+    }
+}
 
 fun attemptAutoSignIn(
     context: Context,
@@ -98,7 +123,10 @@ fun attemptAutoSignIn(
 
     scope.launch {
         try {
-            val cred = credentialManager.getCredential(context, request).credential
+            val targetContext = context.findActivity() ?: context
+            val cred = withTimeoutOrNull(10_000L) {
+                credentialManager.getCredential(targetContext, request).credential
+            }
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val token = GoogleIdTokenCredential.createFrom(cred.data).idToken
                 Firebase.auth.signInWithCredential(
@@ -108,6 +136,8 @@ fun attemptAutoSignIn(
             } else {
                 onUnauthenticated()
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             onUnauthenticated()
         }
@@ -136,7 +166,7 @@ fun onGoogleSignInClicked(
 
     scope.launch {
         try {
-            val activity = context as? Activity
+            val activity = context.findActivity()
                 ?: throw IllegalStateException("Sign-In requires an Activity context.")
             val cred = credentialManager.getCredential(activity, request).credential
             if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
@@ -149,11 +179,22 @@ fun onGoogleSignInClicked(
                 onAuthError("Unexpected credential type returned.")
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.w(TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
-            onAuthCancelled()
+            val msg = e.message.orEmpty()
+            val isExplicitUserDismiss = msg.isBlank() ||
+                msg.contains("activity is cancelled by the user", ignoreCase = true) ||
+                msg.contains("user cancel", ignoreCase = true) ||
+                msg.contains("dismissed", ignoreCase = true)
+            Log.w(TAG, "Google Sign-In flow cancelled or dismissed: $msg", e)
+            if (isExplicitUserDismiss && e.cause == null) {
+                onAuthCancelled()
+            } else {
+                onAuthError(formatCredentialError(e))
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "Sign in failed. Please try again.")
+            onAuthError(formatCredentialError(e))
         }
     }
 }
@@ -185,9 +226,16 @@ fun AuthScreen(
     val scope = rememberCoroutineScope()
     val credentialManager = remember(context) { CredentialManager.create(context) }
 
+    val scrollState = rememberScrollState()
     var isCheckingSilent by remember { mutableStateOf(true) }
     var isSigningIn by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(errorMessage) {
+        if (!errorMessage.isNullOrBlank()) {
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+    }
 
     LaunchedEffect(Unit) {
         attemptAutoSignIn(
@@ -211,7 +259,7 @@ fun AuthScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(horizontal = 24.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
@@ -292,13 +340,24 @@ fun AuthScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 16.dp)
+                            .testTag("auth_error_card")
                     ) {
-                        Text(
-                            text = errorMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(14.dp)
-                        )
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ErrorOutline,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Text(
+                                text = errorMessage.orEmpty(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
                     }
                 }
 

@@ -68,11 +68,18 @@ jobs:
           EOF
 
       - name: Prepare debug keystore
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           if [ ! -f debug.keystore ]; then
             if [ -f debug.keystore.base64 ]; then
-              base64 -d debug.keystore.base64 > debug.keystore
+              tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
+              echo "Restored debug.keystore from debug.keystore.base64."
+            elif [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+              printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > debug.keystore
+              echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
             else
+              echo "::warning::debug.keystore.base64 is missing; generating a temporary debug keystore."
               keytool -genkeypair -v \
                 -keystore debug.keystore \
                 -storepass android \
@@ -85,7 +92,7 @@ jobs:
             fi
           fi
 
-      - name: Check Firebase config
+      - name: Check Firebase config & signing SHA-1
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
@@ -102,6 +109,28 @@ jobs:
             echo "::error::app/google-services.json is missing in this GitHub repository. Add a GOOGLE_SERVICES_JSON secret (paste the contents of app/google-services.json) in GitHub Settings -> Secrets and variables -> Actions, or commit app/google-services.json."
             exit 1
           fi
+
+          ACTUAL_SHA1=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey \
+            | sed -n 's/.*SHA1:[[:space:]]*//p' | tr -d ':' | tr '[:upper:]' '[:lower:]' | head -n 1)
+          echo "Active debug.keystore SHA-1: $ACTUAL_SHA1"
+          python3 - "$ACTUAL_SHA1" << 'PY'
+          import json, sys
+          actual = sys.argv[1].strip().lower()
+          with open("app/google-services.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+          expected = []
+          for c in data.get("client", []):
+              pkg = c.get("client_info", {}).get("android_client_info", {}).get("package_name")
+              if pkg == "com.aistudio.flashcraft.vqmxtp":
+                  for oc in c.get("oauth_client", []):
+                      h = oc.get("android_info", {}).get("certificate_hash")
+                      if h:
+                          expected.append(h.lower())
+          if expected and actual not in expected:
+              print(f"::error::debug.keystore SHA-1 ({actual}) does not match app/google-services.json ({expected}). Google Sign-In will fail after selecting an account! Commit debug.keystore.base64 or add a DEBUG_KEYSTORE_BASE64 secret in GitHub Settings -> Secrets and variables -> Actions.")
+              sys.exit(1)
+          print(f"Verified debug.keystore SHA-1 matches app/google-services.json ({expected or 'none listed'}).")
+          PY
 
       - name: Run unit tests
         run: gradle testDebugUnitTest --max-workers=2 --console=plain

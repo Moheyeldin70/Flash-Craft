@@ -26,7 +26,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -73,6 +72,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 
 object Routes {
     const val DECKS = "decks"
@@ -99,6 +101,14 @@ private enum class TopTab(
     SETTINGS(Routes.SETTINGS, "Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, "nav_settings")
 }
 
+private fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
+    val listener = FirebaseAuth.AuthStateListener { auth ->
+        trySend(auth.currentUser)
+    }
+    addAuthStateListener(listener)
+    awaitClose { removeAuthStateListener(listener) }
+}
+
 @Composable
 fun FlashCraftApp() {
     val context = LocalContext.current
@@ -107,26 +117,22 @@ fun FlashCraftApp() {
         initialValue = com.example.domain.model.UserSettings()
     )
 
-    var currentUser by remember { mutableStateOf<FirebaseUser?>(Firebase.auth.currentUser) }
-    DisposableEffect(Unit) {
-        val listener = FirebaseAuth.AuthStateListener { auth ->
-            currentUser = auth.currentUser
-        }
-        Firebase.auth.addAuthStateListener(listener)
-        onDispose { Firebase.auth.removeAuthStateListener(listener) }
-    }
+    val authStateUser by remember {
+        Firebase.auth.authStateFlow()
+    }.collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+    var signedInFallbackUser by remember { mutableStateOf<FirebaseUser?>(null) }
+    val user = authStateUser ?: signedInFallbackUser
 
     FlashCraftTheme(themeMode = globalSettings.themeMode) {
-        val user = currentUser
         if (user == null) {
             AuthScreen(
-                onAuthSuccess = { currentUser = Firebase.auth.currentUser }
+                onAuthSuccess = { signedInFallbackUser = Firebase.auth.currentUser }
             )
         } else {
             key(user.uid) {
                 AuthenticatedAppScaffold(
                     currentUser = user,
-                    onSignOutCompleted = { currentUser = null }
+                    onSignOutCompleted = { signedInFallbackUser = null }
                 )
             }
         }
