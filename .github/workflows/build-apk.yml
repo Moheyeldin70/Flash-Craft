@@ -50,6 +50,23 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
+      - name: Configure Maven Central mirror
+        run: |
+          mkdir -p "$HOME/.gradle/init.d"
+          cat << 'EOF' > "$HOME/.gradle/init.d/maven-mirror.gradle"
+          gradle.settingsEvaluated { settings ->
+              [settings.pluginManagement.repositories, settings.dependencyResolutionManagement.repositories].each { handler ->
+                  def mirror = handler.maven {
+                      name = "GoogleMavenCentralMirror"
+                      url = uri("https://maven-central.storage-download.googleapis.com/maven2/")
+                  }
+                  handler.remove(mirror)
+                  def centralIdx = handler.findIndexOf { it.name == "MavenRepo" }
+                  handler.add(centralIdx >= 0 ? centralIdx : 0, mirror)
+              }
+          }
+          EOF
+
       - name: Prepare debug keystore
         run: |
           if [ ! -f debug.keystore ]; then
@@ -87,10 +104,10 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: gradle testDebugUnitTest --console=plain
+        run: gradle testDebugUnitTest --max-workers=2 --console=plain
 
       - name: Build Debug APK
-        run: gradle assembleDebug --console=plain
+        run: gradle assembleDebug --max-workers=2 --console=plain
 
       - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
@@ -108,7 +125,7 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
             export KEYSTORE_PATH="$GITHUB_WORKSPACE/my-upload-key.jks"
-            gradle assembleRelease --console=plain
+            gradle assembleRelease --max-workers=2 --console=plain
             echo "RELEASE_BUILT=true" >> "$GITHUB_ENV"
           else
             echo "Release signing secrets not set; skipping release APK."
